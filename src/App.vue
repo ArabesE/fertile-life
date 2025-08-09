@@ -4,7 +4,6 @@
       <div class="seg">
         <button @click="togglePlay">{{ playing ? "Pause" : "Play" }}</button>
         <button @click="stepOnce" :disabled="playing">Step</button>
-        <button @click="restart">Restart</button>
         <button @click="clearAll">Clear</button>
       </div>
 
@@ -75,6 +74,22 @@ const HEIGHT = 200;
 // --- Vue state
 import { onMounted, onBeforeUnmount, ref } from "vue";
 
+// Keep handler refs to remove later
+function onKeyDown(e: KeyboardEvent) {
+  if (e.code === "Space") {
+    spaceHeld = true;
+    e.preventDefault();
+    updateCursor();
+  }
+}
+function onKeyUp(e: KeyboardEvent) {
+  if (e.code === "Space") {
+    spaceHeld = false;
+    updateCursor();
+  }
+}
+let onResize = () => {};
+
 const canvas = ref<HTMLCanvasElement | null>(null);
 const playing = ref(false);
 const speed = ref(20); // steps per second
@@ -128,6 +143,7 @@ function initWorker() {
         buffer,
         generation: gen,
         alive,
+        source, // "init" | "step" | "render" | "clear"
       } = msg as {
         type: "frame";
         width: number;
@@ -135,12 +151,15 @@ function initWorker() {
         buffer: ArrayBuffer;
         generation: number;
         alive: number;
+        source: "init" | "step" | "render" | "clear";
       };
       const pixels = new Uint8ClampedArray(buffer);
       lastFrame = new ImageData(pixels, width, height);
       generation.value = gen;
       aliveCount.value = alive;
-      stepInFlight = false;
+      if (source === "step") {
+        stepInFlight = false;
+      }
       requestDraw();
     }
   };
@@ -169,13 +188,6 @@ function clearAll() {
   generation.value = 0;
   aliveCount.value = 0;
   worker?.postMessage({ type: "clear" });
-}
-
-function restart() {
-  // Keep current A (alive pattern), reset fertility and generation.
-  pause();
-  generation.value = 0;
-  worker?.postMessage({ type: "restart" });
 }
 
 // --------------------------------------------------- Play/pause/step
@@ -224,7 +236,7 @@ function setupCanvas() {
   backCanvas.height = HEIGHT;
   backCtx = backCanvas.getContext("2d")!;
 
-  const resize = () => {
+  onResize = () => {
     if (!canvas.value || !ctx) return;
     const rect = canvas.value.getBoundingClientRect();
     dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
@@ -234,8 +246,8 @@ function setupCanvas() {
     ctx.scale(dpr, dpr);
     draw(); // redraw
   };
-  window.addEventListener("resize", resize, { passive: true });
-  resize();
+  window.addEventListener("resize", onResize, { passive: true });
+  onResize();
 
   // Start centered-ish
   const rect = canvas.value.getBoundingClientRect();
@@ -246,23 +258,8 @@ function setupCanvas() {
   requestRender();
 
   // Key handling for Space-to-pan
-  window.addEventListener(
-    "keydown",
-    (e) => {
-      if (e.code === "Space") {
-        spaceHeld = true;
-        e.preventDefault();
-        updateCursor();
-      }
-    },
-    { passive: false }
-  );
-  window.addEventListener("keyup", (e) => {
-    if (e.code === "Space") {
-      spaceHeld = false;
-      updateCursor();
-    }
-  });
+  window.addEventListener("keydown", onKeyDown, { passive: false });
+  window.addEventListener("keyup", onKeyUp);
 }
 
 function updateCursor() {
@@ -328,7 +325,8 @@ function onPointerDown(ev: PointerEvent) {
   if (!canvas.value) return;
   (ev.target as HTMLElement).setPointerCapture(ev.pointerId);
 
-  const panBtn = ev.button === 1 || ev.button === 2 || spaceHeld;
+  // Pan with middle button or while Space is held (not right button)
+  const panBtn = ev.button === 1 || spaceHeld;
   if (panBtn) {
     isPanning = true;
     panAnchor = { x: ev.clientX, y: ev.clientY };
@@ -422,5 +420,8 @@ onBeforeUnmount(() => {
   pause();
   worker?.terminate();
   worker = null;
+  window.removeEventListener("resize", onResize);
+  window.removeEventListener("keydown", onKeyDown);
+  window.removeEventListener("keyup", onKeyUp);
 });
 </script>

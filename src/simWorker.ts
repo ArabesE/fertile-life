@@ -1,3 +1,4 @@
+/// <reference lib="WebWorker" />
 // Fertile Life simulation worker: keeps UI smooth
 
 type InitMsg = { type: "init"; width: number; height: number };
@@ -5,17 +6,23 @@ type StepMsg = { type: "step" };
 type RenderMsg = { type: "render" };
 type SetCellMsg = { type: "setCell"; x: number; y: number; v: 0 | 1 };
 type ClearMsg = { type: "clear" };
-type RestartMsg = { type: "restart" };
-type InMsg = InitMsg | StepMsg | RenderMsg | SetCellMsg | ClearMsg | RestartMsg;
+type InMsg = InitMsg | StepMsg | RenderMsg | SetCellMsg | ClearMsg;
+type FrameSource = "init" | "step" | "render" | "clear";
+
+// Initialization flag
+let initialized = false;
 
 // Grid
 let W = 0,
   H = 0,
   N = 0;
-let A: Uint8Array; // alive 0/1
-let F: Float32Array; // fertility
-let A2: Uint8Array; // next alive (double buffer)
+let A: Uint8Array = new Uint8Array(0); // alive 0/1
+let F: Float32Array = new Float32Array(0); // fertility
+let A2: Uint8Array = new Uint8Array(0); // next alive (double buffer)
 let gen = 0;
+// Reused neighbor buffers (perf)
+let Fsum: Float32Array = new Float32Array(0);
+let Nsum: Uint8Array = new Uint8Array(0);
 
 // Tunable parameters (good defaults)
 const alpha = 1.2; // soil from death
@@ -38,13 +45,6 @@ function idx(x: number, y: number) {
   return y * W + x;
 }
 
-function wrap(x: number, max: number) {
-  // proper torus wrap that avoids negative modulo quirks
-  if (x < 0) return x + max;
-  if (x >= max) return x - max;
-  return x;
-}
-
 function ensureArrays(width: number, height: number) {
   W = width;
   H = height;
@@ -52,17 +52,19 @@ function ensureArrays(width: number, height: number) {
   A = new Uint8Array(N);
   F = new Float32Array(N);
   A2 = new Uint8Array(N);
+  // allocate reusable neighbor buffers
+  Fsum = new Float32Array(N);
+  Nsum = new Uint8Array(N);
   gen = 0;
+  initialized = true;
 }
 
 function step() {
   const Wm1 = W - 1,
     Hm1 = H - 1;
 
-  // neighbor count and neighbor F sum
+  // reuse preallocated buffers for neighbor count and neighbor F sum
   // For speed, compute in one pass
-  const Fsum = new Float32Array(N);
-  const Nsum = new Uint8Array(N);
 
   // Vertical row indices w/ wrap
   for (let y = 0; y < H; y++) {
@@ -130,9 +132,7 @@ function step() {
 
   // Swap buffers
   const tmp = A;
-  // @ts-ignore
   A = A2;
-  // @ts-ignore
   A2 = tmp;
 
   gen++;
@@ -171,12 +171,13 @@ function renderFrame() {
   return out;
 }
 
-function postFrame(aliveCount: number) {
+function postFrame(aliveCount: number, source: FrameSource) {
   const pixels = renderFrame();
   // Transfer the buffer for speed
-  (postMessage as any)(
+  self.postMessage(
     {
       type: "frame",
+      source,
       width: W,
       height: H,
       generation: gen,
@@ -192,19 +193,25 @@ self.onmessage = (ev: MessageEvent<InMsg>) => {
   switch (msg.type) {
     case "init": {
       ensureArrays(msg.width, msg.height);
-      postFrame(0);
+      postFrame(0, "init");
       break;
     }
     case "step": {
+      if (!initialized) break;
       const alive = step();
-      postFrame(alive);
+      postFrame(alive, "step");
       break;
     }
     case "render": {
-      postFrame(A ? A.reduce((s, v) => s + v, 0) : 0);
+      if (!initialized) break;
+      postFrame(
+        A.reduce((s, v) => s + v, 0),
+        "render"
+      );
       break;
     }
     case "setCell": {
+      if (!initialized) break;
       const { x, y, v } = msg;
       if (x >= 0 && y >= 0 && x < W && y < H) {
         A[idx(x, y)] = v;
@@ -212,17 +219,11 @@ self.onmessage = (ev: MessageEvent<InMsg>) => {
       break;
     }
     case "clear": {
+      if (!initialized) break;
       A.fill(0);
       F.fill(0);
       gen = 0;
-      postFrame(0);
-      break;
-    }
-    case "restart": {
-      // keep A (pattern), reset fertility and generation
-      F.fill(0);
-      gen = 0;
-      postFrame(A.reduce((s, v) => s + v, 0));
+      postFrame(0, "clear");
       break;
     }
   }
