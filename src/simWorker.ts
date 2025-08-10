@@ -5,9 +5,29 @@ type InitMsg = { type: "init"; width: number; height: number };
 type StepMsg = { type: "step" };
 type RenderMsg = { type: "render" };
 type SetCellMsg = { type: "setCell"; x: number; y: number; v: 0 | 1 };
-type ClearMsg = { type: "clear" };
-type InMsg = InitMsg | StepMsg | RenderMsg | SetCellMsg | ClearMsg;
-type FrameSource = "init" | "step" | "render" | "clear";
+type ResetMsg = { type: "reset" };
+type SetParamsMsg = {
+  type: "setParams";
+  params: Partial<{
+    f0: number;
+    tau: number;
+    sigma: number;
+    alpha: number;
+    beta: number;
+    kappa: number;
+    d: number;
+    delta: number;
+    w0: number;
+  }>;
+};
+type InMsg =
+  | InitMsg
+  | StepMsg
+  | RenderMsg
+  | ResetMsg
+  | SetCellMsg
+  | SetParamsMsg;
+type FrameSource = "init" | "step" | "render" | "reset";
 
 // Initialization flag
 let initialized = false;
@@ -24,16 +44,18 @@ let gen = 0;
 let Fsum: Float32Array = new Float32Array(0);
 let Nsum: Uint8Array = new Uint8Array(0);
 
-// Tunable parameters (good defaults)
-const alpha = 1.2; // soil from death
-const tau = 0.55; // birth fertility threshold
-const sigma = 0.08; // survival soil floor
-const beta = 0.6; // birth cost
-const kappa = 0.04; // survival maintenance
-const d = 0.3; // diffusion
-const delta = 0.008; // decay
-const w0 = 0.6,
-  w1 = 0.4; // effective soil mix
+// Tunable parameters (runtime adjustable) - fallback defaults (UI is source of truth)
+// These match App.vue so first frame after init is consistent if UI sends params early.
+let f0 = 0.7; // initial fertility
+let tau = 0.5; // birth fertility threshold
+let sigma = 0.1; // survival soil floor
+let alpha = 1.0; // soil from death
+let beta = 0.4; // birth cost
+let kappa = 0.03; // survival maintenance
+let d = 0.3; // diffusion
+let delta = 0.008; // decay
+let w0 = 0.6;
+let w1 = 1 - w0; // effective soil mix
 
 // Visualization
 const F_VIS_CAP = 1.5; // clamp fertility for color
@@ -51,6 +73,8 @@ function ensureArrays(width: number, height: number) {
   N = W * H;
   A = new Uint8Array(N);
   F = new Float32Array(N);
+  // Initialize land with baseline fertility
+  F.fill(f0);
   A2 = new Uint8Array(N);
   // allocate reusable neighbor buffers
   Fsum = new Float32Array(N);
@@ -210,6 +234,14 @@ self.onmessage = (ev: MessageEvent<InMsg>) => {
       );
       break;
     }
+    case "reset": {
+      if (!initialized) break;
+      A.fill(0);
+      F.fill(f0);
+      gen = 0;
+      postFrame(0, "reset");
+      break;
+    }
     case "setCell": {
       if (!initialized) break;
       const { x, y, v } = msg;
@@ -218,12 +250,22 @@ self.onmessage = (ev: MessageEvent<InMsg>) => {
       }
       break;
     }
-    case "clear": {
-      if (!initialized) break;
-      A.fill(0);
-      F.fill(0);
-      gen = 0;
-      postFrame(0, "clear");
+    case "setParams": {
+      // Accept parameter updates anytime
+      const p = msg.params;
+      if (p.f0 !== undefined) f0 = p.f0;
+      if (p.tau !== undefined) tau = p.tau;
+      if (p.sigma !== undefined) sigma = p.sigma;
+      if (p.alpha !== undefined) alpha = p.alpha;
+      if (p.beta !== undefined) beta = p.beta;
+      if (p.kappa !== undefined) kappa = p.kappa;
+      if (p.d !== undefined) d = p.d;
+      if (p.delta !== undefined) delta = p.delta;
+      if (p.w0 !== undefined) {
+        // Clamp w0 to [0,1] and recompute w1
+        w0 = Math.max(0, Math.min(1, p.w0));
+        w1 = 1 - w0;
+      }
       break;
     }
   }

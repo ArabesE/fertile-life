@@ -4,48 +4,80 @@
       <div class="seg">
         <button @click="togglePlay">{{ playing ? "Pause" : "Play" }}</button>
         <button @click="stepOnce" :disabled="playing">Step</button>
-        <button @click="clearAll">Clear</button>
+        <button @click="resetAll">Reset</button>
       </div>
 
-      <div
-        style="
-          display: flex;
-          align-items: center;
-          gap: 0.4rem;
-          margin-left: 0.6rem;
-        "
-      >
-        <span class="label">Speed</span>
-        <input
-          type="range"
-          min="1"
-          max="60"
-          v-model.number="speed"
-          @input="applySpeed"
-        />
-        <span class="stat">{{ speed }} steps/s</span>
-      </div>
+      <!-- Speed group (no extra wrapper) -->
+      <span class="label" style="margin-left: 0.6rem">Speed</span>
+      <input
+        type="range"
+        min="1"
+        max="60"
+        v-model.number="speed"
+        @input="applySpeed"
+      />
+      <span class="stat">{{ speed }} steps/s</span>
 
-      <div
-        style="
-          display: flex;
-          align-items: center;
-          gap: 0.4rem;
-          margin-left: 1rem;
-        "
-      >
-        <span class="label">Zoom</span>
-        <div class="seg">
-          <button @click="zoomOut">−</button>
-          <button @click="zoomIn">+</button>
+      <!-- Zoom group (no extra wrapper) -->
+      <span class="label" style="margin-left: 1rem">Zoom</span>
+      <div class="seg">
+        <button @click="zoomOut">−</button>
+        <button @click="zoomIn">+</button>
+      </div>
+      <span class="stat">{{ cellSize.toFixed(1) }} px/cell</span>
+
+      <!-- Params trigger (no extra wrapper) -->
+      <details class="params-menu" style="margin-left: 1rem">
+        <summary class="btn">Params</summary>
+        <div class="params-panel">
+          <div class="params-grid">
+            <label class="label">f0 (initial fertility)</label>
+            <input type="number" step="0.01" v-model.number="params.f0" />
+
+            <label class="label">alpha (death→soil)</label>
+            <input type="number" step="0.01" v-model.number="params.alpha" />
+
+            <label class="label">tau (birth threshold)</label>
+            <input type="number" step="0.001" v-model.number="params.tau" />
+
+            <label class="label">sigma (survival floor)</label>
+            <input type="number" step="0.001" v-model.number="params.sigma" />
+
+            <label class="label">beta (birth cost)</label>
+            <input type="number" step="0.01" v-model.number="params.beta" />
+
+            <label class="label">kappa (maintenance)</label>
+            <input type="number" step="0.001" v-model.number="params.kappa" />
+
+            <label class="label">d (diffusion)</label>
+            <input type="number" step="0.001" v-model.number="params.d" />
+
+            <label class="label">delta (decay)</label>
+            <input type="number" step="0.001" v-model.number="params.delta" />
+
+            <label class="label">w0 (self weight)</label>
+            <div class="seg">
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                v-model.number="params.w0"
+              />
+              <span class="stat" style="min-width: 3ch; text-align: right">{{
+                params.w0.toFixed(2)
+              }}</span>
+            </div>
+
+            <label class="label">w1 (neighbor weight)</label>
+            <input type="number" :value="w1Display" disabled />
+          </div>
         </div>
-        <span class="stat">{{ cellSize.toFixed(1) }} px/cell</span>
-      </div>
+      </details>
 
-      <div style="margin-left: auto; display: flex; gap: 1rem">
-        <span class="stat">Generation: {{ generation }}</span>
-        <span class="stat">Alive: {{ aliveCount }}</span>
-      </div>
+      <!-- Right stats (no extra wrapper) -->
+      <span style="margin-left: auto">Generation: {{ generation }}</span>
+      <span>Alive: {{ aliveCount }}</span>
     </div>
 
     <div class="wrap">
@@ -67,12 +99,32 @@
 </template>
 
 <script setup lang="ts">
+import {
+  onMounted,
+  onBeforeUnmount,
+  ref,
+  reactive,
+  watch,
+  computed,
+} from "vue";
+
 // --- constants
 const WIDTH = 200;
 const HEIGHT = 200;
 
-// --- Vue state
-import { onMounted, onBeforeUnmount, ref } from "vue";
+// Simulation tunables (UI) with defaults matching worker
+const params = reactive({
+  f0: 0.7,
+  tau: 0.5,
+  sigma: 0.1,
+  alpha: 1.0,
+  beta: 0.4,
+  kappa: 0.03,
+  d: 0.3,
+  delta: 0.008,
+  w0: 0.6,
+});
+const w1Display = computed(() => (1 - params.w0).toFixed(2));
 
 // Keep handler refs to remove later
 function onKeyDown(e: KeyboardEvent) {
@@ -128,6 +180,31 @@ let lastFrame: ImageData | null = null;
 const clamp = (v: number, lo: number, hi: number) =>
   Math.max(lo, Math.min(hi, v));
 
+function sendParams() {
+  if (!worker) return;
+  const p = {
+    f0: params.f0,
+    tau: params.tau,
+    sigma: params.sigma,
+    alpha: params.alpha,
+    beta: params.beta,
+    kappa: params.kappa,
+    d: params.d,
+    delta: params.delta,
+    w0: clamp(params.w0, 0, 1),
+  };
+  worker.postMessage({ type: "setParams", params: p });
+}
+
+// push updates whenever UI params change
+watch(
+  params,
+  () => {
+    sendParams();
+  },
+  { deep: true }
+);
+
 // --------------------------------------------------- Worker wiring
 function initWorker() {
   worker = new Worker(new URL("./simWorker.ts", import.meta.url), {
@@ -143,7 +220,7 @@ function initWorker() {
         buffer,
         generation: gen,
         alive,
-        source, // "init" | "step" | "render" | "clear"
+        source, // "init" | "step" | "render" | "reset"
       } = msg as {
         type: "frame";
         width: number;
@@ -151,7 +228,7 @@ function initWorker() {
         buffer: ArrayBuffer;
         generation: number;
         alive: number;
-        source: "init" | "step" | "render" | "clear";
+        source: "init" | "step" | "render" | "reset";
       };
       const pixels = new Uint8ClampedArray(buffer);
       lastFrame = new ImageData(pixels, width, height);
@@ -164,6 +241,8 @@ function initWorker() {
     }
   };
 
+  // Push initial params BEFORE init so the very first frame uses UI defaults
+  sendParams();
   worker.postMessage({ type: "init", width: WIDTH, height: HEIGHT });
 }
 
@@ -183,11 +262,11 @@ function setCell(x: number, y: number, v: 0 | 1) {
   worker.postMessage({ type: "setCell", x, y, v });
 }
 
-function clearAll() {
+function resetAll() {
   pause();
   generation.value = 0;
   aliveCount.value = 0;
-  worker?.postMessage({ type: "clear" });
+  worker?.postMessage({ type: "reset" });
 }
 
 // --------------------------------------------------- Play/pause/step
@@ -272,7 +351,7 @@ function draw() {
   const w = canvas.value.clientWidth;
   const h = canvas.value.clientHeight;
 
-  // Clear
+  // Reset
   ctx.fillStyle = "#0b0d10";
   ctx.fillRect(0, 0, w, h);
 
