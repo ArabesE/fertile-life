@@ -1,4 +1,8 @@
 /// <reference lib="WebWorker" />
+
+/* Copyright (c) 2025 Loren Bian
+  Licensed under the MIT License. See LICENSE file in the project root. */
+
 // Fertile Life simulation worker: keeps UI smooth
 
 type InitMsg = { type: "init"; width: number; height: number };

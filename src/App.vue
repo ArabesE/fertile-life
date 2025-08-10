@@ -99,6 +99,8 @@
 </template>
 
 <script setup lang="ts">
+/* Copyright (c) 2025 Loren Bian
+  Licensed under the MIT License. See LICENSE file in the project root. */
 import {
   onMounted,
   onBeforeUnmount,
